@@ -1,14 +1,13 @@
 from datetime import timedelta, datetime
-from typing import Annotated
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Dict
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from starlette import status
-from database import SessionLocal
-from models import Users
 from passlib.context import CryptContext
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from jose import jwt, JWTError
+from database import SessionLocal
+from models import Users
 
 router = APIRouter(
     prefix='/auth',
@@ -19,7 +18,7 @@ SECRET_KEY = '4d35a986f84841e22b96445ca588c30ce4f4409126a6ea8c46aaa8c58dfda00b'
 ALGORITHM = 'HS256'
 
 bcrypt_context = CryptContext(schemes=['bcrypt'], deprecated='auto')
-oath2_bearer = OAuth2PasswordBearer(tokenUrl='auth/token')
+oauth2_bearer = OAuth2PasswordBearer(tokenUrl='auth/token')
 
 
 class CreateUserRequest(BaseModel):
@@ -36,6 +35,15 @@ class Token(BaseModel):
     token_type: str
 
 
+class UserResponse(BaseModel):
+    username: str
+    email: str
+    first_name: str
+    last_name: str
+    role: str
+    is_active: bool
+
+
 def get_db():
     db = SessionLocal()
     try:
@@ -43,12 +51,14 @@ def get_db():
     finally:
         db.close()
 
-db_dependency = Annotated[Session, Depends(get_db)]
+db_dependency = Depends(get_db)
 
 
-
-@router.post("/", status_code=status.HTTP_201_CREATED)
-async def create_user(db: db_dependency, create_user_request: CreateUserRequest):
+@router.post("/", status_code=status.HTTP_201_CREATED, response_model=UserResponse)
+async def create_user(
+    create_user_request: CreateUserRequest,
+    db: Session = db_dependency
+):
     create_user_model = Users(
         email=create_user_request.email,
         username=create_user_request.username,
@@ -61,23 +71,43 @@ async def create_user(db: db_dependency, create_user_request: CreateUserRequest)
 
     db.add(create_user_model)
     db.commit()
+    db.refresh(create_user_model)  # اطمینان از بروز رسانی مدل بعد از commit
+    return UserResponse(
+        username=create_user_model.username,
+        email=create_user_model.email,
+        first_name=create_user_model.first_name,
+        last_name=create_user_model.last_name,
+        role=create_user_model.role,
+        is_active=create_user_model.is_active
+    )
 
-def authenticate_user(username: str, password: str, db):
+
+def authenticate_user(username: str, password: str, db: Session) -> UserResponse:
     user = db.query(Users).filter(Users.username == username).first()
     if not user:
-        return False
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail='User not found')
     if not bcrypt_context.verify(password, user.hashed_password):
-        return False
-    return user
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail='Incorrect password')
+    return UserResponse(
+        username=user.username,
+        email=user.email,
+        first_name=user.first_name,
+        last_name=user.last_name,
+        role=user.role,
+        is_active=user.is_active
+    )
 
-def create_access_token(username: str, user_id: int, expires_delta: timedelta):
 
+def create_access_token(username: str, user_id: int, expires_delta: timedelta) -> str:
     encode = {'sub': username, 'id': user_id}
     expires = datetime.utcnow() + expires_delta
     encode.update({'exp': expires})
     return jwt.encode(encode, SECRET_KEY, algorithm=ALGORITHM)
 
-async def get_current_user(token: Annotated[str, Depends(oath2_bearer)]):
+
+async def get_current_user(token: str = Depends(oauth2_bearer)) -> Dict[str, int]:
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get('sub')
@@ -91,9 +121,11 @@ async def get_current_user(token: Annotated[str, Depends(oath2_bearer)]):
                             detail='Could not validate user.')
 
 
-
 @router.post("/token", response_model=Token)
-async def login_for_access_token(form_data: Annotated[OAuth2PasswordRequestForm, Depends()], db: db_dependency):
+async def login_for_access_token(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = db_dependency
+):
     user = authenticate_user(form_data.username, form_data.password, db)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
