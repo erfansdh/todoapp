@@ -1,5 +1,5 @@
 from datetime import timedelta, datetime
-from typing import Dict
+from typing import Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -36,6 +36,7 @@ class Token(BaseModel):
 
 
 class UserResponse(BaseModel):
+    id: Optional[int] = None
     username: str
     email: str
     first_name: str
@@ -71,7 +72,7 @@ async def create_user(
 
     db.add(create_user_model)
     db.commit()
-    db.refresh(create_user_model)  # اطمینان از بروز رسانی مدل بعد از commit
+    db.refresh(create_user_model)
     return UserResponse(
         username=create_user_model.username,
         email=create_user_model.email,
@@ -92,6 +93,7 @@ def authenticate_user(username: str, password: str, db: Session) -> UserResponse
                             detail='Incorrect password')
     return UserResponse(
         username=user.username,
+        id=user.id,
         email=user.email,
         first_name=user.first_name,
         last_name=user.last_name,
@@ -100,8 +102,8 @@ def authenticate_user(username: str, password: str, db: Session) -> UserResponse
     )
 
 
-def create_access_token(username: str, user_id: int, expires_delta: timedelta) -> str:
-    encode = {'sub': username, 'id': user_id}
+def create_access_token(username: str, user_id: int, role: str, expires_delta: timedelta) -> str:
+    encode = {'sub': username, 'id': user_id, 'role': role}
     expires = datetime.utcnow() + expires_delta
     encode.update({'exp': expires})
     return jwt.encode(encode, SECRET_KEY, algorithm=ALGORITHM)
@@ -112,10 +114,11 @@ async def get_current_user(token: str = Depends(oauth2_bearer)) -> Dict[str, int
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get('sub')
         user_id: int = payload.get('id')
+        user_role: str = payload.get('role')
         if username is None or user_id is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
                                 detail='Could not validate user.')
-        return {'username': username, 'id': user_id}
+        return {'username': username, 'id': user_id, 'user_role': user_role}
     except JWTError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
                             detail='Could not validate user.')
@@ -130,5 +133,5 @@ async def login_for_access_token(
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
                             detail='Could not validate user.')
-    token = create_access_token(user.username, user.id, timedelta(minutes=20))
+    token = create_access_token(user.username, user.id, user.role, timedelta(minutes=20))
     return {'access_token': token, 'token_type': 'bearer'}
