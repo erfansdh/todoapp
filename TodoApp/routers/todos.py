@@ -56,7 +56,7 @@ async def create_todo(request: Request, title: str = Form(...), description: str
     if user is None:
         return RedirectResponse(url="/auth", status_code=status.HTTP_302_FOUND)
 
-    todo_model= models.Todos()
+    todo_model = models.Todos()
     todo_model.title = title
     todo_model.description = description
     todo_model.priority = priority
